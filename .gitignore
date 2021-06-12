@@ -1,4 +1,4 @@
-.ipynb_checkpoints/
-__pycache__/
-dataset/mcts-*/
-model/*/
+*/.ipynb_checkpoints/
+*/__pycache__/
+*/dataset/mcts-*/
+*/model/*/

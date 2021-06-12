@@ -22,6 +22,17 @@ class Agent:
         a_idx = np.random.choice(len(action_set))
         return action_set[a_idx]
 
+class RandomAgent(Agent):
+    def __init__(self,seed):
+        self.last_observation_id = 0
+        self.seed = seed
+
+    def act(self,state):
+        np.random.seed(self.seed)
+        action_set = state.action_set
+        a_idx = np.random.choice(len(action_set))
+        return action_set[a_idx]
+
 class IpyAgent(Agent):
     def act(self,state):
         ## first, print out relevant infos
@@ -231,8 +242,11 @@ class MCTSAgent(Agent):
                 ## value samples: Q(state,action) -> final reward - current reward
                 ## update the value samples here
                 for sample in self.samples_partial_cache:
-                    if len(sample) == 5:
-                        self.samples_cache.append((sample[0],sample[1],sample[2],state.eval_score-sample[3],sample[4]))
+                    if len(sample) == 6:
+                        if len(sample[4]) == 1:
+                            self.samples_cache.append((sample[0],sample[1],sample[2],state.eval_score-sample[3],sample[4],[state.eval_score-sample[3]]))
+                        else:
+                            self.samples_cache.append((sample[0],sample[1],sample[2],state.eval_score-sample[3],sample[4],sample[5]))
                 self.samples_partial_cache = []
 
                 self.cache_samples()
@@ -352,13 +366,13 @@ class MCTSAgent(Agent):
     def mcts_search(self,state):
         action_set = state.action_set
         Na = len(action_set)
-        if Na == 1:
+        if Na == 1: ## TODO: consider remove this part for more consistent training samples
             action = action_set[0]
             if self.sample_collect_flag:
                 ## value samples: Q(state,action) -> final reward - current reward
                 ## only init parts here; append the final reward at the end of the game
                 state_vec,actions_vec,direc = state.get_vecs()
-                self.samples_partial_cache.append((state_vec,actions_vec,state.eval_score,[1]))
+                self.samples_partial_cache.append((state_vec,actions_vec,direc,state.eval_score,[1],[state.eval_score]))
         else:
             if self.root_node is None:
                 self.init_mcts_tree(state)
@@ -438,8 +452,20 @@ class MCTSAgent(Agent):
                 self.predict_node_batch(nodes_queue)
                 nodes_queue = []
 
+            if self.infer_flag:
+                temp = 0
+            else:
+                if state.round_ >= 10:
+                    temp = 0
+                else:
+                    temp = self.temp * (1 - state.round_ / 10.0)
+
+            a_idx,action,a_probs,q_values = self.root_node.select_action_by_count_aug(temp=temp)
+            # _,_,a_probs,q_values = self.root_node.select_action_by_count_aug(temp=1)
+
             if self.debug_flag:
                 # print(state.round_,self.root_node.child_probs)
+                # print(state.round_,a_probs,temp)
 
                 try:
                     ruler = state.ruler
@@ -447,34 +473,19 @@ class MCTSAgent(Agent):
                     values = [kv[1].sim_count for kv in kvs]
                     sort_idxs = np.argsort(values)[::-1]
                     debug_str = []
-                    for idx in sort_idxs:
+                    for idx in sort_idxs[:5]:
                         child = kvs[idx][1]
-                        debug_str.append(' {},{:.2f},{:.2f},{:.2f},{:.2f}'.format(ruler.get_codes_repr(kvs[idx][0]),child.sim_count,child.sim_value,child.predict_value,child.pc/self.c_puct))
+                        debug_str.append(' {}-->N:{:d},V:{:.0f},{:.0f},p:{:.2f},{:.2f}'.format(ruler.get_codes_repr(kvs[idx][0]),child.sim_count,child.sim_value,child.predict_value,a_probs[idx],child.pc/self.c_puct))
                     
                     debug_str = ';'.join(debug_str)
                     print(debug_str)
                 except Exception:
                     pass
 
-            if self.infer_flag:
-                temp = 0
-            else:
-                if state.round_ >= 6:
-                    temp = 0
-                else:
-                    temp = self.temp * (1 - state.round_ / 6.0)
-
-            a_idx,action,a_probs = self.root_node.select_action_by_count(temp=temp)
-            _,_,a_probs = self.root_node.select_action_by_count(temp=1)
-            # a_idx,action,a_probs = self.root_node.select_action_by_count(temp=self.temp)
-
-            # if self.debug_flag:
-            #     print(state.round_,a_probs,temp)
-
             if self.sample_collect_flag:
                 state_vec,actions_vec,direc = self.root_node.state.get_vecs()
 
-                self.samples_cache.append((state_vec,actions_vec,direc,state.eval_score,a_probs))
+                self.samples_partial_cache.append((state_vec,actions_vec,direc,state.eval_score,a_probs,q_values))
                 # ## policy samples: P(state,actions,direc) -> action_probs
                 # self.policy_samples_cache.append((state_vec,actions_vec,direc,a_probs))
                 # ## value samples: Q(state,action) -> final reward - current reward

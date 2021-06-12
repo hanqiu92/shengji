@@ -44,8 +44,8 @@ class State:
         state_copy.set_action_set(self.get_action_set())
         return state_copy
 
-    def init_game_info(self,structs_by_player):
-        # codes_by_player,structs_by_player = game_info
+    def init_game_info(self,game_info):
+        _,structs_by_player = game_info
 
         self.round_ = 0
         self.game_score = 0
@@ -160,6 +160,7 @@ class StateExtend(State):
         super().init_game_info(game_info)
         self.score_encoding = self.ruler.codes_score
         
+        codes_by_player,_ = game_info
         # state = [s_score,s_stack,
         #         s_history,s_curr,s_future,
         #         player_status,
@@ -168,6 +169,8 @@ class StateExtend(State):
         self.state_vec = np.zeros((1,54 + 54*(1+4+4+4) + 4*3 + (1+4+4+4) + 2 + 1 + 1,),dtype=int)
         self.state_vec[0,0:54] = self.score_encoding
         self.state_vec[0,(1*54):(2*54)] = self.ruler.get_codes_encodings(self.stack) * 100
+        for player in range(4):
+            self.state_vec[0,((10+player)*54):((11+player)*54)] = self.ruler.get_codes_encodings(codes_by_player[player]) * 100
         self.state_vec[0,(14*54+12)] = self.stack_score
 
         self.actions_vec = np.zeros((0,55),dtype=int)

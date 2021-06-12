@@ -44,7 +44,7 @@ def decompress(compress_game,state_generator,player):
     
     ## initialize the state object
     state = state_generator(meta_info=(number,house,suit,ruler,stack,None))
-    state.init_game_info(structs_by_player)
+    state.init_game_info((codes_by_player,structs_by_player))
 
     ## generate the first action set
     state.update_action_set(player.generate_option(state.structs_by_player[state.curr_player],state))
@@ -149,3 +149,52 @@ def run_games(agents,state_generator,N_iter=100,if_random_game=True,fname=None,i
 
     return np.array(curr_scores),np.array(eval_scores)
 
+def run_single_game_ref(agents,state,env,agents_ref=None,if_display=False):
+    end_flag = False
+    observation_id = random.getrandbits(64)
+    for agent in agents:
+        agent.observe(observation_id=observation_id,prev_action=None,state=state,start_flag=True,end_flag=end_flag)
+    if agents_ref is not None:
+        for agent in agents_ref:
+            agent.observe(observation_id=observation_id,prev_action=None,state=state,start_flag=True,end_flag=end_flag)
+    while not end_flag:
+        action = agents[state.curr_player].act(state)
+        if agents_ref is not None:
+            print('*************** REF: ***************')
+            action_ref = agents_ref[state.curr_player].act(state)
+        _,end_flag,state = env.step(state,action,if_display=if_display)
+        observation_id = random.getrandbits(64)
+        for agent in agents:
+            agent.observe(observation_id=observation_id,prev_action=action,state=state,start_flag=False,end_flag=end_flag)
+        if agents_ref is not None:
+            for agent in agents_ref:
+                agent.observe(observation_id=observation_id,prev_action=action,state=state,start_flag=False,end_flag=end_flag)
+    game_score = (-1 if state.house % 2 == 0 else 1) * state.game_score
+    eval_score = state.eval_score
+    return game_score,eval_score
+
+def run_games_ref(agents,state_generator,agents_ref=None,N_iter=100,if_random_game=True,fname=None,if_train=False,models=[],if_display=False):
+    env = Env(Game(),DefaultPlayer(),state_generator=state_generator)
+    curr_scores,eval_scores = [],[]
+    if fname is not None:
+        with open(fname,'rb') as fb:
+            compress_games = pickle.load(fb)
+        player = DefaultPlayer()
+        N_iter = min(N_iter,len(compress_games))
+        if_random_game = False
+    else:
+        if_random_game = True
+    for iter_ in range(N_iter):
+        if if_random_game:
+            state,_ = generate_random_game(env,if_display=if_display)
+        else:
+            state,_ = decompress(compress_games[iter_],state_generator,player)
+        curr_score,eval_score = run_single_game_ref(agents,state,env,agents_ref=agents_ref,if_display=if_display)
+        curr_scores.append(curr_score)
+        eval_scores.append(eval_score)
+
+        if if_train:
+            for model in models:
+                model.learn()
+
+    return np.array(curr_scores),np.array(eval_scores)

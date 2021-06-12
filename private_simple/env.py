@@ -1,24 +1,26 @@
 import numpy as np
 import random
-import pulp
 
 class Ruler:
-    def __init__(self,major_level=2,major_suit=1):
-        self.suit_enc_size = [12,12,12,18]
+    def __init__(self,suit_size=5,score_map={1:10,4:10},major_level=1,major_suit=1):
+        self.suit_size = suit_size
+        self.score_map = score_map
+        self.deck_size = 4 * self.suit_size + 2
+        self.suit_enc_size = [suit_size-1,suit_size-1,suit_size-1,suit_size+5]
         self.suit_enc_cum_size = np.cumsum([0] + self.suit_enc_size)
         self.codes_suit_enc = np.concatenate([np.full((size,),idx,dtype=int) for idx,size in enumerate(self.suit_enc_size)])
         self.suit_signs = '♦♣♥♠'
         self.update(major_level,major_suit)
 
-    def update(self,major_level=2,major_suit=1):
+    def update(self,major_level=1,major_suit=1):
         self.major_level = major_level
         self.major_suit = major_suit
-        self.major_level_order = (self.major_level + 11) % 13
+        self.major_level_order = self.major_level - 1
 
-        self.codes_score = np.zeros((54,),dtype=int)
-        self.codes_value = np.zeros((54,),dtype=int)
+        self.codes_score = np.zeros((self.deck_size,),dtype=int)
+        self.codes_value = np.zeros((self.deck_size,),dtype=int)
         self.codes_repr = []
-        for code in range(54):
+        for code in range(self.deck_size):
             card = self.get_card_decoding(code)
             self.codes_score[code] = self.get_card_score(card)
             self.codes_value[code] = self.get_card_value(card)
@@ -26,9 +28,9 @@ class Ruler:
 
     def get_card_encoding(self,card):
         suit,num = card
-        num_order = (num + 11) % 13
+        num_order = num - 1
         if suit == 0:
-            return 52 + num
+            return 4 * self.suit_size + num
         else:
             if suit == self.major_suit:
                 suit_enc = 3
@@ -36,23 +38,23 @@ class Ruler:
                 suit_enc = suit - 1 - (suit > self.major_suit)
 
             if num == self.major_level:
-                return 48 + suit_enc
+                return 4 * (self.suit_size - 1) + suit_enc
             else:
-                return suit_enc * 12 + num_order - (num_order > self.major_level_order)
+                return suit_enc * (self.suit_size - 1) + num_order - (num_order > self.major_level_order)
         return -1
 
     def get_card_decoding(self,code):
-        if code > 51:
-            return (0,code - 52)
+        if code > 4 * self.suit_size - 1:
+            return (0,code - 4 * self.suit_size)
         else:
-            if code >= 48:
+            if code >= 4 * self.suit_size - 4:
                 num = self.major_level
-                suit_enc = code - 48
+                suit_enc = code - (4 * self.suit_size - 4)
             else:
-                num_order = code % 12
+                num_order = code % (self.suit_size - 1)
                 num_order += (num_order >= self.major_level_order)
-                num = (num_order + 1) % 13 + 1
-                suit_enc = code // 12
+                num = num_order + 1
+                suit_enc = code // (self.suit_size - 1)
 
             if suit_enc == 3:
                 suit = self.major_suit
@@ -62,12 +64,7 @@ class Ruler:
 
     def get_card_score(self,card):
         suit,num = card
-        if num == 5:
-            score = 5
-        elif num == 10 or num == 13:
-            score = 10
-        else:
-            score = 0
+        score = self.score_map.get(num,0) if suit > 0 else 0
         return score
 
     def get_card_value(self,card):
@@ -81,7 +78,7 @@ class Ruler:
         if num == self.major_level:
             value += 50
         else:
-            value += (num + 11) % 13
+            value += num
         return value
 
     def get_card_repr(self,card):
@@ -93,15 +90,9 @@ class Ruler:
                 return '☆☆'
         else:
             suit_sign = self.suit_signs[suit - 1]
-            num_sign = str(num)
-            if num == 1:
+            num_sign = str(num + 1)
+            if num == self.suit_size:
                 num_sign = 'A'
-            elif num == 11:
-                num_sign = 'J'
-            elif num == 12:
-                num_sign = 'Q'
-            elif num == 13:
-                num_sign = 'K'
         return suit_sign + num_sign
 
     def get_code_score(self,code):
@@ -130,7 +121,7 @@ class Ruler:
         return strings
 
     def get_codes_encodings(self,codes):
-        encodings = np.zeros((54,),dtype=int)
+        encodings = np.zeros((self.deck_size,),dtype=int)
         for code in codes:
             encodings[code] += 1
         return encodings
@@ -183,9 +174,9 @@ class Ruler:
                 bool_pairs_extend[1:-1] = bool_pairs
                 if suit_enc == 3:
                     bool_pairs_extend = \
-                        np.concatenate([bool_pairs_extend[:13],
-                                    [(np.sum(bool_pairs_extend[13:16]) > 0).astype(int)],
-                                    bool_pairs_extend[16:]])
+                        np.concatenate([bool_pairs_extend[:self.suit_size],
+                                    [(np.sum(bool_pairs_extend[self.suit_size:(self.suit_size+3)]) > 0).astype(int)],
+                                    bool_pairs_extend[(self.suit_size+3):]])
 
                 idxs_cont_pairs = np.where(np.abs(np.diff(bool_pairs_extend)) > 0)[0]
                 idxs_cont_pairs = idxs_cont_pairs.reshape((-1,2))
@@ -198,10 +189,10 @@ class Ruler:
                         codes_tmp = []
                         for ii in range(pair_size):
                             code_tmp = code_in_suit - ii
-                            if code_tmp > 12:
+                            if code_tmp > self.suit_size - 1:
                                 code_tmp += 2
-                            elif code_tmp == 12:
-                                for code_in_suit_tmp in (12,13,14):
+                            elif code_tmp == self.suit_size - 1:
+                                for code_in_suit_tmp in (self.suit_size - 1,self.suit_size,self.suit_size + 1):
                                     if bool_pairs[code_in_suit_tmp]:
                                         code_tmp = code_in_suit_tmp
                                         bool_pairs[code_in_suit_tmp] = False
@@ -211,7 +202,7 @@ class Ruler:
                             codes_tmp.append(code_tmp)
                         struct_suit.append((2*pair_size,(codes_tmp[0]),tuple(codes_tmp)))
 
-                    for code_in_suit in (12,13,14):
+                    for code_in_suit in (self.suit_size - 1,self.suit_size,self.suit_size + 1):
                         if bool_pairs[code_in_suit]:
                             code = code_in_suit + code_start_suit
                             struct_suit.append((2,code,(code,code)))
@@ -257,18 +248,30 @@ class Ruler:
                     if self.get_code_value(curr_struct[0][1]) > self.get_code_value(best_struct[0][1]):
                         return True,curr_struct
             else:
-                ## single flushes
+                ## single flushes, not allowed!
+                print('error!')
                 if max([self.get_code_value(component[1]) for component in curr_struct]) > \
                     max([self.get_code_value(component[1]) for component in best_struct]):
                     return True,curr_struct
 
         else:
-            bool_feas,curr_struct_matched = self.match_struct(round_struct,curr_struct)
-            if not bool_feas:
+            if round_num != round_struct[0][0]:
+                print('error!')
+                print(round_num,round_struct)
+                assert round_num == 4
+
+            if curr_struct[0][0] != round_num:
                 return False,None
 
-            if self.get_minmax_struct_value(curr_struct_matched)[3] > self.get_minmax_struct_value(best_struct)[3]:
-                return True,curr_struct_matched
+            if self.get_code_value(curr_struct[0][1]) > self.get_code_value(best_struct[0][1]):
+                return True,curr_struct
+
+            # bool_feas,curr_struct_matched = self.match_struct(round_struct,curr_struct)
+            # if not bool_feas:
+            #     return False,None
+
+            # if self.get_minmax_struct_value(curr_struct_matched)[3] > self.get_minmax_struct_value(best_struct)[3]:
+            #     return True,curr_struct_matched
 
         return False,None
 
@@ -382,12 +385,13 @@ class Ruler:
         return True,struct_matched
 
 class Game:
-    def __init__(self):
-        self.decks = [(suit,number) for suit in range(1,5) for number in range(1,14)] + \
-                     [(0,number) for number in range(2)]
+    def __init__(self,suit_size=5,score_map={1:10,4:10}):
+        self.suit_size = suit_size
+        self.decks = [(suit,number) for suit in range(1,5) for number in range(1,suit_size+1)] + [(0,number) for number in range(2)]
         self.new_decks = self.decks.copy() + self.decks.copy()
+        self.score_map = score_map
 
-    def assign_cards(self,player,game_config,if_display=True):
+    def assign_cards(self,player,game_config,if_display_private=True,if_display_public=False):
         curr_house,curr_number = game_config
 
         if curr_house >= 0:
@@ -401,7 +405,7 @@ class Game:
         cards = [[] for _ in range(4)]
         call_history = []
         curr_call = None
-        for round_ in range(25):
+        for round_ in range(2*self.suit_size-1):
             for curr_player in ((np.arange(4)+player_start) % 4):
                 curr_card = this_deck.pop()
                 cards[curr_player].append(curr_card)
@@ -426,7 +430,7 @@ class Game:
         else:
             curr_suit = curr_call[2]
 
-        ruler = Ruler(curr_number,curr_suit)
+        ruler = Ruler(self.suit_size,self.score_map,curr_number,curr_suit)
         cards[curr_house].extend(this_deck)
 
         codes = [None for _ in range(4)]
@@ -438,9 +442,13 @@ class Game:
 
         stack,codes[curr_house],structs[curr_house] = player.stack(codes[curr_house],structs[curr_house],ruler)
         
-        if if_display:
-            for curr_player in range(4):
-                print('init:player:{} -> [{}],{}.'.format(curr_player,ruler.get_codes_repr(codes[curr_player]),len(codes[curr_player])))
+        if if_display_private:
+            print('major suit:{}, major level:{}, curr house:{}.'.format(ruler.suit_signs[curr_suit-1],curr_number+1,curr_house))
+            if if_display_public:
+                print('stack: [{}]'.format(ruler.get_codes_repr(stack)))
+                for curr_player in range(4):
+                    print('init:player:{} -> [{}],{}.'.format(curr_player,ruler.get_codes_repr(codes[curr_player]),len(codes[curr_player])))
+            print('-' * 20)
 
         return codes,structs,stack,(curr_number,curr_suit,curr_house),ruler
 
@@ -464,15 +472,12 @@ class DefaultPlayer:
             return None
 
     def stack(self,codes,struct_by_suit,ruler):
-        assert len(codes) == 33
         struct = sum([struct_by_suit[suit_enc][1] for suit_enc in range(4)],[])
         codes_options = self.generate_fold_options_heuristic(struct,ruler,budget=8,value_flag=1)
         stack = codes_options[np.random.choice(len(codes_options))]
         codes_remain = self.remove_codes_by_code(codes,stack,ruler)
-        assert len(codes_remain) == 25
         struct_remain = ruler.get_struct(codes_remain)[-1]
         return stack,codes_remain,struct_remain
-
 
     def remove_codes_by_code(self,codes,codes_selected,ruler):
         codes = np.sort(codes)
@@ -514,19 +519,18 @@ class DefaultPlayer:
         # return codes_remain,struct_remain
         return struct_remain
 
-
     def _eval_code_func(self,code,ruler,value_flag=1,direc_flag=-1):
         ## value flag: 1 = score max, 0 = score neutral, -1 = score min
         ## direc flag: 1 = max, -1 = min; max means the value is in reversed order
         value = code
-        if value < 36:
-            value = value % 12
+        if value < 3 * (ruler.suit_size - 1):
+            value = value % (ruler.suit_size - 1)
 
         if ruler.get_code_score(code) > 0:
             if value_flag == 1:
-                value += 12
+                value += (ruler.suit_size - 1)
             elif value_flag == -1:
-                value = - value - 12
+                value = - value - (ruler.suit_size - 1)
 
         if direc_flag == 1:
             return -value
@@ -536,18 +540,23 @@ class DefaultPlayer:
         return value
 
     def generate_option(self,struct_by_suit,global_info):
+        ## option = (codes,struct,is_clean)
         if global_info.is_first:    
             action_options = self.generate_option_first(struct_by_suit,global_info)
         else:
             action_options = self.generate_option_follow(struct_by_suit,global_info)
         return action_options
 
+    def generate_feasible_options(self,component):
+        ## TODO: handle more than 1!
+        return [(component[-1],[component],True)]
+
     def generate_option_first(self,struct_by_suit,global_info):
         ## option = (codes,struct,is_clean)
         action_options = []
         for suit_enc in range(4):
             for component in struct_by_suit[suit_enc][1]:
-                action_options.append((component[-1],[component],True))
+                action_options.extend(self.generate_feasible_options(component))
         return action_options
 
     def generate_option_follow(self,struct_by_suit,global_info):
@@ -807,23 +816,24 @@ class Env:
         self.player = player
         self.state_generator = state_generator
 
-    def init(self,game_config,if_display=False):
+    def init(self,game_config,if_display_private=False,if_display_public=False):
         '''
         assign cards, finish call and stack
         '''
         ## initialize game info
-        codes_by_player,structs_by_player,stack,(curr_number,curr_suit,curr_house),ruler = self.game.assign_cards(self.player,game_config,if_display=if_display)
+        codes_by_player,structs_by_player,stack,(curr_number,curr_suit,curr_house),ruler = self.game.assign_cards(self.player,game_config,if_display_private=if_display_private,if_display_public=if_display_public)
 
         ## initialize the state object
         state = self.state_generator(meta_info=(curr_number,curr_house,curr_suit,ruler,stack,None))
-        state.init_game_info(structs_by_player)
+        state.init_game_info((codes_by_player,structs_by_player))
 
         ## generate the first action set
         state.update_action_set(self.player.generate_option(state.structs_by_player[state.curr_player],state))
+        info_set = state.get_info_set()
 
-        return state,codes_by_player
+        return state,info_set,codes_by_player
 
-    def step(self,state,action,if_display=False):
+    def step(self,state,action,if_display_private=False,if_display_public=False):
         '''
         execute the action -> check whether a round ends -> check whether the game ends
         '''
@@ -869,9 +879,11 @@ class Env:
         round_plays.append((curr_player,tuple(curr_codes)))
         state.update_round_info((round_num,round_suit_enc,round_struct,best_suit_enc,best_struct,best_player,best_codes,round_plays))
 
-        if if_display:
+        if if_display_public:
             codes_ = ruler.get_struct_codes(state.structs_by_player[curr_player])
             print('round:{},player:{} -> {}, curr best {}. player remain: [{}],{}.'.format(state.round_,curr_player,ruler.get_codes_repr(curr_codes),ruler.get_codes_repr(state.best_codes),ruler.get_codes_repr(codes_),len(codes_)))
+        elif if_display_private:
+            print('round:{},player:{} -> {}, curr best {}. player remain: [?],?.'.format(state.round_,curr_player,ruler.get_codes_repr(curr_codes),ruler.get_codes_repr(state.best_codes)))
 
         ## check whether a round ends
         end_flag = False
@@ -906,14 +918,15 @@ class Env:
             round_eval_score *= (1 if state.best_player % 2 == 0 else -1)
             state.update_game_info(round_score,round_eval_score)
 
-            if if_display:
+            if if_display_private or if_display_public:
                 print('round:{},current score:{}, eval score:{}.'.format(state.round_,state.game_score,state.eval_score))
-                print('-------------------')
+                print('-' * 20)
 
         if not end_flag:
             state.update_action_set(self.player.generate_option(state.structs_by_player[state.curr_player],state))
         else:
             state.update_action_set([])
 
+        info_set = state.get_info_set()
         reward = round_eval_score
-        return reward,end_flag,state
+        return reward,end_flag,state,info_set

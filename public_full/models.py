@@ -90,6 +90,7 @@ def transform_vec_tf(x_vec):
                         tf.cast(tf.equal(x_vec,2),dtype=tf.float32)],axis=-2)
     # x_vec = tf.expand_dims(x_vec,axis=-1)
     x_vec = tf.reshape(x_vec,(-1,3,54))
+    ## reshape the deck from 4*13+2 to 4*(12+6), for the extraction of continuous pair info
     x_vec1 = tf.reshape(x_vec[:,:,:48],(-1,3,4,12))
     x_vec2 = tf.concat([tf.zeros((tf.shape(x_vec)[0],3,3,6)),tf.reshape(x_vec[:,:,48:],(-1,3,1,6))],axis=-2)
     x_vec = tf.reshape(tf.concat([x_vec1,x_vec2],axis=-1),(-1,12,18))
@@ -169,14 +170,18 @@ def q_net(s,a,As,vec_hidden_units,state_hidden_units,value_hidden_units,scale_hi
     sAs_total = tf.concat([tf.tile(tf.expand_dims(s_total,axis=1),
                                    (1,tf.shape(As_total)[1],1)),As_total],axis=-1)
     
-    v_s0 = value_model(s_total)[:,0]
-    scale_s = scale_model(s_total)[:,0]
-    v_s = v_s0 * 400
+    v_s = value_model(s_total)[:,0]
+    # scale_s = scale_model(s_total)[:,0]
 
-    q_sa = qvalue_model(sa_total)[:,0] * 400 * scale_s + v_s
-    q_sAs = qvalue_model(sAs_total)[:,:,0] * 400 * tf.expand_dims(scale_s,axis=-1) + tf.expand_dims(v_s,axis=-1)
-    logits_sAs = logits_model(sAs_total)[:,:,0] * tf.expand_dims(scale_s,axis=-1) + tf.expand_dims(v_s0,axis=-1)
-    return v_s,q_sa,q_sAs,logits_sAs,temp
+    # q_sa = qvalue_model(sa_total)[:,0] * scale_s + v_s
+    q_sa = qvalue_model(sa_total)[:,0] + v_s
+
+    q_sAs = qvalue_model(sAs_total)[:,:,0]
+    q_sAs = (q_sAs - tf.expand_dims(tf.reduce_mean(q_sAs,axis=-1),axis=-1)) + tf.expand_dims(v_s,axis=-1)
+    # q_sAs = (q_sAs - tf.expand_dims(tf.reduce_mean(q_sAs,axis=-1),axis=-1)) * 400 * tf.expand_dims(scale_s,axis=-1) + tf.expand_dims(v_s,axis=-1)
+
+    logits_sAs = logits_model(sAs_total)[:,:,0]
+    return v_s*400,q_sa*400,q_sAs*400,logits_sAs,temp
 
 def transform_q_tf(q_sAs,logits_sAs,direcs,mask,temp):
     q_sAs_direc = q_sAs * tf.expand_dims(direcs,axis=-1)
@@ -201,7 +206,7 @@ class BaseModel(Model):
         self.vec_hidden_units = [4,4,16]
         self.state_hidden_units = [64,32]
         self.value_hidden_units = self.scale_hidden_units = [32]
-        self.qvalue_hidden_units = self.probs_hidden_units = [32]
+        self.qvalue_hidden_units = self.probs_hidden_units = [32,16]
         self.reg_scale = 1e-5
         self.q_net = kwargs.get('q_net',
             lambda s,a,As: q_net(s,a,As,self.vec_hidden_units,self.state_hidden_units,self.value_hidden_units,self.scale_hidden_units,self.qvalue_hidden_units,self.probs_hidden_units,self.activation,self.reg_scale))
@@ -370,16 +375,20 @@ class MCTSModel(BaseModel):
             ## labels
             self.tfv_s = tf.placeholder(tf.float32, [None, ], 'values')
             self.tfprobs_sAs = tf.placeholder(tf.float32, [None, None], 'probs')
+            self.tfq_sAs = tf.placeholder(tf.float32, [None, None], 'q_values')
 
             self.v_loss = tf.reduce_mean(tf.square(self.v_s_eval - self.tfv_s))
-            self.train_v_op = tf.train.AdamOptimizer(self.lr).minimize(self.v_loss)
-
             self.prob_loss = tf.reduce_mean(
                 tf.nn.softmax_cross_entropy_with_logits_v2(labels=self.tfprobs_sAs,logits=self.logits_sAs_final_eval)
             )
-            self.train_prob_op = tf.train.AdamOptimizer(self.lr).minimize(self.prob_loss)
+            self.q_loss_all = self.q_sAs_eval - self.tfq_sAs
+            self.q_loss_all = self.q_loss_all - tf.expand_dims(tf.reduce_mean(self.q_loss_all,axis=-1),axis=-1)
+            self.q_loss = tf.reduce_mean(tf.reduce_sum(tf.square(self.q_loss_all) * self.tfmask,axis=-1))
+            self.v_bs_loss = tf.reduce_mean(tf.square(self.v_s_eval - self.v_s_new_eval))
 
-            self.train_joint_op = tf.train.AdamOptimizer(self.lr).minimize(self.prob_loss + 1e-4 * self.v_loss)
+            self.train_v_op = tf.train.AdamOptimizer(self.lr).minimize(self.v_loss)
+            self.train_prob_op = tf.train.AdamOptimizer(self.lr).minimize(self.prob_loss)
+            self.train_joint_op = tf.train.AdamOptimizer(self.lr).minimize(1e0 * self.prob_loss + 1e-4 * self.v_loss + 1e-8 * self.q_loss + 1e-10 * self.v_bs_loss)
 
             self.sess.run(tf.global_variables_initializer())
             self.sess.run(self.temp_eval.assign(-5))
@@ -394,42 +403,53 @@ class MCTSModel(BaseModel):
                                        self.tf_direc_out:direc_batch})
         return vs,probs
 
+    def extract_batch(self,exp):
+        if exp is not None:
+            s_batch,As_batch,direc_batch,mask_len_batch,value_batch,probs_batch,q_batch = [],[],[],[],[],[],[]
+            for sample in exp:
+                state_vec,actions_vec,direc,value,a_probs,q_values = sample
+                mask_len_batch.append(actions_vec.shape[1])
+            max_len = np.max(mask_len_batch)
+            
+            for sample in exp:
+                state_vec,actions_vec,direc,value,a_probs,q_values = sample
+
+                # rotation = np.random.choice(4)
+                # if rotation > 0:
+                #     rotate_direc = (1 if rotation % 2 == 0 else -1)
+                #     direc = direc * rotate_direc
+                #     value = value * rotate_direc
+                #     state_vec = rotate_state(state_vec,rotation)
+
+                s_batch.append(state_vec)
+                direc_batch.append(direc)
+                value_batch.append(value)
+                
+                n_pad = max_len - actions_vec.shape[1]
+                if n_pad > 0:
+                    actions_vec = np.concatenate([actions_vec,np.zeros((1,n_pad,55))],axis=1)
+                    a_probs = np.concatenate([a_probs,np.zeros((n_pad,))],axis=0)
+                    q_values = np.concatenate([q_values,np.zeros((n_pad,))],axis=0)
+                
+                As_batch.append(actions_vec)
+                probs_batch.append(a_probs)
+                q_batch.append(q_values)
+
+            return s_batch,As_batch,direc_batch,mask_len_batch,value_batch,probs_batch,q_batch
+        else:
+            return None,None,None,None,None,None,None
+
     def learn(self):
         prob_loss_batches,value_loss_batches = [],[]
         for _ in range(self.learn_iter):
             exp = self.get_experience_sample(exp_pool_id=0)
             if exp is not None:
-                s_batch,As_batch,direc_batch,mask_len_batch,value_batch,probs_batch = [],[],[],[],[],[]
-                for sample in exp:
-                    state_vec,actions_vec,direc,value,a_probs = sample
-                    mask_len_batch.append(actions_vec.shape[1])
-                max_len = np.max(mask_len_batch)
-                
-                for sample in exp:
-                    state_vec,actions_vec,direc,value,a_probs = sample
-
-                    rotation = np.random.choice(4)
-                    if rotation > 0:
-                        rotate_direc = (1 if rotation % 2 == 0 else -1)
-                        direc = direc * rotate_direc
-                        value = value * rotate_direc
-                        state_vec = rotate_state(state_vec,rotation)
-
-                    s_batch.append(state_vec)
-                    direc_batch.append(direc)
-                    value_batch.append(value)
-                    
-                    n_pad = max_len - actions_vec.shape[1]
-                    if n_pad > 0:
-                        actions_vec = np.concatenate([actions_vec,np.zeros((1,n_pad,55))],axis=1)
-                        a_probs = np.concatenate([a_probs,np.zeros((n_pad,))],axis=0)
-                    
-                    As_batch.append(actions_vec)
-                    probs_batch.append(a_probs)
-
+                s_batch,As_batch,direc_batch,mask_len_batch,value_batch,probs_batch,q_batch = \
+                    self.extract_batch(exp)
                 _,value_loss_batch,prob_loss_batch = self.sess.run([self.train_joint_op,self.v_loss,self.prob_loss],{self.tfs:np.concatenate(s_batch,axis=0),
                                              self.tfAs:np.concatenate(As_batch,axis=0),
                                              self.tfprobs_sAs:np.stack(probs_batch,axis=0),
+                                             self.tfq_sAs:np.stack(q_batch,axis=0),
                                              self.tfv_s:np.array(value_batch),
                                              self.tfmask_len:np.array(mask_len_batch),
                                              self.tf_direc:np.array(direc_batch),
@@ -444,37 +464,12 @@ class MCTSModel(BaseModel):
         prob_loss_batches,value_loss_batches = [],[]
         exp = self.get_experience_sample(exp_pool_id=0)
         if exp is not None:
-            s_batch,As_batch,direc_batch,mask_len_batch,value_batch,probs_batch = [],[],[],[],[],[]
-            for sample in exp:
-                state_vec,actions_vec,direc,value,a_probs = sample
-                mask_len_batch.append(actions_vec.shape[1])
-            max_len = np.max(mask_len_batch)
-            
-            for sample in exp:
-                state_vec,actions_vec,direc,value,a_probs = sample
-
-                rotation = np.random.choice(4)
-                if rotation > 0:
-                    rotate_direc = (1 if rotation % 2 == 0 else -1)
-                    direc = direc * rotate_direc
-                    value = value * rotate_direc
-                    state_vec = rotate_state(state_vec,rotation)
-
-                s_batch.append(state_vec)
-                direc_batch.append(direc)
-                value_batch.append(value)
-                
-                n_pad = max_len - actions_vec.shape[1]
-                if n_pad > 0:
-                    actions_vec = np.concatenate([actions_vec,np.zeros((1,n_pad,55))],axis=1)
-                    a_probs = np.concatenate([a_probs,np.zeros((n_pad,))],axis=0)
-                
-                As_batch.append(actions_vec)
-                probs_batch.append(a_probs)
-
+            s_batch,As_batch,direc_batch,mask_len_batch,value_batch,probs_batch,q_batch = \
+                    self.extract_batch(exp)
             value_loss_batch,prob_loss_batch = self.sess.run([self.v_loss,self.prob_loss],{self.tfs:np.concatenate(s_batch,axis=0),
                                             self.tfAs:np.concatenate(As_batch,axis=0),
                                             self.tfprobs_sAs:np.stack(probs_batch,axis=0),
+                                            self.tfq_sAs:np.stack(q_batch,axis=0),
                                             self.tfv_s:np.array(value_batch),
                                             self.tfmask_len:np.array(mask_len_batch),
                                             self.tf_direc:np.array(direc_batch),
@@ -483,3 +478,4 @@ class MCTSModel(BaseModel):
             value_loss_batches.append(value_loss_batch)
 
         return prob_loss_batches,value_loss_batches
+
